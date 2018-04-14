@@ -7,6 +7,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <signal.h>
 
 #include <util/threading.h>
 #include <util/platform.h>
@@ -84,24 +85,6 @@ static void *video_thread(void *data)
                                 frame.color_range_max);
 
 
-    struct sockaddr_in serv_addr;
-    int sock = 0;
-    if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
-        printf("\n Socket creation error \n");
-        return -1;
-    }
-
-
-    serv_addr.sin_family = AF_INET;
-    serv_addr.sin_port = htons(50007);
-    inet_pton(AF_INET, "192.168.0.169", &serv_addr.sin_addr);
-
-    if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
-    {
-        printf("\nConnection Failed \n");
-        return -1;
-    }
-
     int in_pipe[2];
     int out_pipe[2];
     int pid1, pid2;
@@ -133,9 +116,29 @@ static void *video_thread(void *data)
         uint8_t buf[1024];
         close(out_pipe[0]);
 
-        while ((len = read(sock, buf, sizeof(buf))) > 0 && os_event_try(rt->stop_signal) == EAGAIN) {
+        struct sockaddr_in serv_addr;
+        int sock = 0;
+        if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+            printf("\n Socket creation error \n");
+            return -1;
+        }
+
+
+        serv_addr.sin_family = AF_INET;
+        serv_addr.sin_port = htons(50007);
+        inet_pton(AF_INET, "192.168.0.169", &serv_addr.sin_addr);
+
+        if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
+        {
+            printf("\nConnection Failed \n");
+            return -1;
+        }
+
+        while ((len = read(sock, buf, sizeof(buf))) > 0) {
             write(in_pipe[1], buf, len);
         }
+        shutdown(sock, SHUT_RDWR);
+        close(sock);
         exit(0);
     }
     close(in_pipe[1]);
@@ -173,6 +176,10 @@ static void *video_thread(void *data)
 
         os_sleepto_ns(cur_time + 250000000);
     }
+
+    kill(pid1, SIGINT);
+    kill(pid2, SIGINT);
+
     return NULL;
 }
 
