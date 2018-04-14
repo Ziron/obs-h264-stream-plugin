@@ -32,8 +32,14 @@ static void h264_stream_destroy(void *data)
     }
 }
 
-static inline void fill_texture(uint32_t *pixels)
+static inline void fill_texture(uint8_t *pixels)
 {
+    int i;
+    for (i = 0; i < (640 * 480 * 3) / 2; i++) {
+        pixels[i] = rand();
+    }
+    return;
+
     size_t x, y;
 
     for (y = 0; y < 20; y++) {
@@ -52,27 +58,49 @@ static inline void fill_texture(uint32_t *pixels)
 static void *video_thread(void *data)
 {
     struct h264_stream_tex   *rt = data;
-    uint32_t            pixels[20*20];
-    uint64_t            cur_time = os_gettime_ns();
+    uint8_t            pixels[(640 * 480 * 3) / 2];
+    uint64_t           cur_time = os_gettime_ns();
 
     struct obs_source_frame frame = {
-            .data     = {[0] = (uint8_t*)pixels},
-            .linesize = {[0] = 20*4},
-            .width    = 20,
-            .height   = 20,
-            .format   = VIDEO_FORMAT_BGRX
+            .data     = {[0] = pixels, [1] = pixels + 640*480, [2] = pixels + 640*480 + 640*480 / 4},
+            .linesize = {[0] = 640, [1] = 640 / 2, [2] = 640 / 2},
+            .width    = 640,
+            .height   = 480,
+            .format   = VIDEO_FORMAT_I420
     };
+    video_format_get_parameters(VIDEO_CS_DEFAULT, VIDEO_RANGE_PARTIAL,
+                                frame.color_matrix, frame.color_range_min,
+                                frame.color_range_max);
 
-    while (os_event_try(rt->stop_signal) == EAGAIN) {
-        fill_texture(pixels);
 
+    FILE *pipein = popen("ffmpeg -re -framerate 30 -i /home/sebbe/Documents/piStream/stream.h264 -f image2pipe -vcodec rawvideo -pix_fmt yuv420p -", "r");
+
+    // Process video frames
+    while(os_event_try(rt->stop_signal) == EAGAIN) {
+        // Read a frame from the input pipe into the buffer
+        int count = fread(pixels, 1, sizeof(pixels), pipein);
+
+        //printf("Got frame of size %u!\n", count);
+
+        if (count < sizeof(pixels)) break;
+
+        cur_time = os_gettime_ns();
         frame.timestamp = cur_time;
 
         obs_source_output_video(rt->source, &frame);
 
-        os_sleepto_ns(cur_time += 250000000);
+        //os_sleepto_ns(cur_time + 100000000);
     }
+    while (os_event_try(rt->stop_signal) == EAGAIN) {
+        fill_texture(pixels);
 
+        cur_time = os_gettime_ns();
+        frame.timestamp = cur_time;
+
+        obs_source_output_video(rt->source, &frame);
+
+        os_sleepto_ns(cur_time + 250000000);
+    }
     return NULL;
 }
 
@@ -108,9 +136,6 @@ struct obs_source_info h264_stream_source_info = {
 };
 
 OBS_DECLARE_MODULE()
-
-extern struct obs_source_info slideshow_info;
-extern struct obs_source_info color_source_info;
 
 bool obs_module_load(void)
 {
