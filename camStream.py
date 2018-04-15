@@ -5,6 +5,7 @@ import socket
 import time
 from thread import start_new_thread
 from threading import RLock
+import select
 
 
 DEBUG = False
@@ -50,8 +51,10 @@ class Splitter():
     
     def removeOutFile(self, f):
         try:
-            with(self.lock):
+            with self.lock:
                 self.outFileList.remove(f)
+                f.shutdown(socket.SHUT_RD)
+                f.close()
         except Exception as e:
             print e
     
@@ -67,11 +70,12 @@ class Splitter():
                     print(frame.index, "sps_header")
         
         
-        toBeRemoved = []
-        with(self.lock):
-            for f in self.outFileList:
+        _,outputready,_ = select.select([],self.outFileList,[])
+        toBeRemoved = [x for x in self.outFileList if x not in outputready]
+        with self.lock:
+            for f in outputready:
                 try:
-                    f.write(data)
+                    sentBytes = f.sendall(data)
                 except Exception as e:
                     print e
                     toBeRemoved.append(f)
@@ -80,7 +84,8 @@ class Splitter():
             self.removeOutFile(f)
     
     def flush(self):
-        with(self.lock):
+        return
+        with self.lock:
             for f in self.outFileList:
                 try:
                     f.flush()
@@ -94,7 +99,6 @@ class Splitter():
 class CameraHandler():
     def __init__(self):
         self.camera = PiCamera(resolution=(1280, 720), framerate=30, sensor_mode=5)
-        self.outFileList = []
         self.lock = RLock()
         self.splitter = None
     
@@ -103,9 +107,13 @@ class CameraHandler():
     
     def addOutFile(self, f):
         with self.lock:
-            self.outFileList.append(f)
+            if self.splitter is not None:
+                outFileList = list(self.splitter.outFileList)
+            else:
+                outFileList = []
+            outFileList.append(f)
             
-            self.splitter = Splitter(self.outFileList)
+            self.splitter = Splitter(outFileList)
             
             if self.camera.recording:
                 self.camera.split_recording(self.splitter)
@@ -114,20 +122,19 @@ class CameraHandler():
     
     def removeOutFile(self, f):
         try:
+            self.splitter.removeOutFile(f)
             with self.lock:
-                self.splitter.removeOutFile(f)
-                self.outFileList.remove(f)
-                if len(self.outFileList) == 0:
+                if len(self.splitter.outFileList) == 0 and self.camera.recording:
+                    print("Stopping recording...")
                     self.camera.stop_recording()
         except Exception as e:
             print e
             
             
-c = CameraHandler()
 
-def client_thread(conn):
-    f = conn.makefile()
-    c.addOutFile(f)
+def client_thread(conn, cam):
+    f = conn#.makefile()
+    cam.addOutFile(f)
     
     try:
         while True:
@@ -139,16 +146,17 @@ def client_thread(conn):
     
     print("[-] Closed connection")
     
-    c.removeOutFile(f)
+    cam.removeOutFile(f)
     conn.close()
 
 try:
+    c = CameraHandler()
     while True:
         # blocking call, waits to accept a connection
         conn, addr = s.accept()
         print("[-] Connected to " + addr[0] + ":" + str(addr[1]))
 
-        start_new_thread(client_thread, (conn,))
+        start_new_thread(client_thread, (conn, c,))
 finally:
     del c
 
