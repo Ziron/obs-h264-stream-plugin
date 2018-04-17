@@ -21,6 +21,9 @@ struct h264_stream_tex {
     const char *ipaddr;
     uint32_t width;
     uint32_t height;
+
+    int in_pipe[2];
+    int out_pipe[2];
 };
 
 static const char *h264_stream_getname(void *unused) {
@@ -65,7 +68,43 @@ static inline void fill_texture(uint8_t *pixels) {
 }
 
 static void *tcp_thread(void *data) {
+    struct h264_stream_tex *rt = data;
 
+    signal(SIGINT, SIG_DFL);
+    int len = 0;
+    uint8_t buf[1024];
+    close(rt->out_pipe[0]);
+
+    while (1) {
+        if (rt->ipaddr == NULL) {
+            sleep(1);
+            continue;
+        }
+
+        struct sockaddr_in serv_addr;
+        int sock = 0;
+        if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+            fprintf(stderr, "Socket creation error \n");
+            break;
+        }
+
+        serv_addr.sin_family = AF_INET;
+        serv_addr.sin_port = htons(50007);
+        inet_pton(AF_INET, rt->ipaddr, &serv_addr.sin_addr);
+        if (connect(sock, (struct sockaddr *) &serv_addr, sizeof(serv_addr)) < 0) {
+            fprintf(stderr, "Connection Failed \n");
+            sleep(1);
+            continue;
+        }
+
+        while ((len = read(sock, buf, sizeof(buf))) > 0) {
+            write(rt->in_pipe[1], buf, len);
+        }
+        shutdown(sock, SHUT_WR);
+        close(sock);
+    }
+    close(rt->in_pipe[1]);
+    exit(0);
 }
 
 static void *video_thread(void *data) {
@@ -116,14 +155,13 @@ static void *video_thread(void *data) {
     close(in_pipe[0]);
     close(out_pipe[1]);
 
-    /*
+/*
     pthread_t tcp_thread_child;
 
     if (pthread_create(&tcp_thread_child, NULL, tcp_thread, rt) != 0) {
         h264_stream_destroy(rt);
         return NULL;
-    }
-    */
+    }*/
 
     pid2 = fork(); //span a child process
     if (pid2 == 0) {
@@ -167,14 +205,15 @@ static void *video_thread(void *data) {
 
     //Only parent gets here. Listen to what the tail says
     //close(pipefd[1]);
-    FILE *pipein = fdopen(out_pipe[0], "r");
+    //FILE *pipein = fdopen(out_pipe[0], "r");
 
     //FILE *pipein = popen("ffmpeg -re -framerate 30 -i /home/sebbe/Documents/piStream/stream.h264 -f image2pipe -vcodec rawvideo -pix_fmt yuv420p -", "r");
 
     // Process video frames
     while (os_event_try(rt->stop_signal) == EAGAIN) {
         // Read a frame from the input pipe into the buffer
-        int count = fread(pixels, 1, sizeof(pixels), pipein);
+        //int count = fread(pixels, 1, sizeof(pixels), pipein);
+        int count = read(out_pipe[0], pixels, sizeof(pixels));
 
         //printf("Got frame of size %u!\n", count);
 
