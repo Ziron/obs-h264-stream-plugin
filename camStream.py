@@ -98,7 +98,7 @@ class Splitter():
 
 class CameraHandler():
     def __init__(self):
-        self.camera = PiCamera(resolution=(1280, 720), framerate=30, sensor_mode=5)
+        self.camera = PiCamera(resolution=(1296, 972), framerate=30, sensor_mode=4)
         self.lock = RLock()
         self.splitter = None
     
