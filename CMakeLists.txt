@@ -9,4 +9,4 @@ target_link_libraries(h264-stream
         libobs
         ${h264-stream_PLATFORM_DEPS})
 
-install_obs_plugin_with_data(h264-stream data)
+install_obs_plugin(h264-stream)
