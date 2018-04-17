@@ -71,7 +71,8 @@ class Splitter():
         
         
         _,outputready,_ = select.select([],self.outFileList,[])
-        toBeRemoved = [x for x in self.outFileList if x not in outputready]
+        toBeRemoved = []
+        #toBeRemoved = [x for x in self.outFileList if x not in outputready]
         with self.lock:
             for f in outputready:
                 try:
