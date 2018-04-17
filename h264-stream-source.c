@@ -21,6 +21,11 @@ struct h264_stream_tex {
     const char *ipaddr;
     uint32_t width;
     uint32_t height;
+
+    bool reconnect;
+
+    int stream_pipe;
+    int video_pipe;
 };
 
 static const char *h264_stream_getname(void *unused) {
@@ -65,7 +70,46 @@ static inline void fill_texture(uint8_t *pixels) {
 }
 
 static void *tcp_thread(void *data) {
+    struct h264_stream_tex *rt = data;
 
+    //signal(SIGINT, SIG_DFL);
+    int len = 0;
+    uint8_t buf[1024];
+
+    while (os_event_try(rt->stop_signal) == EAGAIN) {
+        if (rt->ipaddr == NULL) {
+            sleep(1);
+            continue;
+        }
+        rt->reconnect = false;
+
+        struct sockaddr_in serv_addr;
+        int sock = 0;
+        if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+            fprintf(stderr, "Socket creation error \n");
+            break;
+        }
+
+        serv_addr.sin_family = AF_INET;
+        serv_addr.sin_port = htons(50007);
+        inet_pton(AF_INET, rt->ipaddr, &serv_addr.sin_addr);
+        if (connect(sock, (struct sockaddr *) &serv_addr, sizeof(serv_addr)) < 0) {
+            fprintf(stderr, "Connection Failed \n");
+            sleep(1);
+            continue;
+        }
+
+        while ((len = read(sock, buf, sizeof(buf))) > 0) {
+            write(rt->stream_pipe, buf, len);
+            if (rt->reconnect || os_event_try(rt->stop_signal) != EAGAIN) {
+                break;
+            }
+        }
+        shutdown(sock, SHUT_WR);
+        close(sock);
+    }
+    close(rt->stream_pipe);
+    return NULL;
 }
 
 static void *video_thread(void *data) {
@@ -95,6 +139,10 @@ static void *video_thread(void *data) {
 
     pipe(in_pipe); //create a pipe
     pipe(out_pipe); //create a pipe
+
+    rt->video_pipe = out_pipe[0];
+    rt->stream_pipe = in_pipe[1];
+
     pid1 = fork(); //span a child process
     if (pid1 == 0) {
         signal(SIGINT, SIG_DFL);
@@ -116,15 +164,14 @@ static void *video_thread(void *data) {
     close(in_pipe[0]);
     close(out_pipe[1]);
 
-    /*
+
     pthread_t tcp_thread_child;
 
     if (pthread_create(&tcp_thread_child, NULL, tcp_thread, rt) != 0) {
         h264_stream_destroy(rt);
         return NULL;
     }
-    */
-
+    /*
     pid2 = fork(); //span a child process
     if (pid2 == 0) {
         signal(SIGINT, SIG_DFL);
@@ -155,7 +202,7 @@ static void *video_thread(void *data) {
             }
 
             while ((len = read(sock, buf, sizeof(buf))) > 0) {
-                write(in_pipe[1], buf, len);
+                write(rt->stream_pipe, buf, len);
             }
             shutdown(sock, SHUT_WR);
             close(sock);
@@ -163,11 +210,11 @@ static void *video_thread(void *data) {
         close(in_pipe[1]);
         exit(0);
     }
-    close(in_pipe[1]);
+    */
 
     //Only parent gets here. Listen to what the tail says
     //close(pipefd[1]);
-    FILE *pipein = fdopen(out_pipe[0], "r");
+    FILE *pipein = fdopen(rt->video_pipe, "r");
 
     //FILE *pipein = popen("ffmpeg -re -framerate 30 -i /home/sebbe/Documents/piStream/stream.h264 -f image2pipe -vcodec rawvideo -pix_fmt yuv420p -", "r");
 
@@ -175,6 +222,7 @@ static void *video_thread(void *data) {
     while (os_event_try(rt->stop_signal) == EAGAIN) {
         // Read a frame from the input pipe into the buffer
         int count = fread(pixels, 1, sizeof(pixels), pipein);
+        //int count = read(out_pipe[0], pixels, sizeof(pixels));
 
         //printf("Got frame of size %u!\n", count);
 
@@ -214,6 +262,7 @@ static void h264_stream_update(void *data, obs_data_t *settings) {
     context->ipaddr = ipaddr;
     context->width = width;
     context->height = height;
+    context->reconnect = true;
 }
 
 static void *h264_stream_create(obs_data_t *settings, obs_source_t *source) {
