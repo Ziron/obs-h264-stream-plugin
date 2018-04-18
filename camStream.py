@@ -119,7 +119,7 @@ class CameraHandler():
             if self.camera.recording:
                 self.camera.split_recording(self.splitter)
             else:
-                self.camera.start_recording(self.splitter, format='h264')
+                self.camera.start_recording(self.splitter, format='h264', bitrate=10000000)
     
     def removeOutFile(self, f):
         try:
@@ -158,8 +158,10 @@ try:
         print("[-] Connected to " + addr[0] + ":" + str(addr[1]))
 
         start_new_thread(client_thread, (conn, c,))
+except Exception as e:
+    print e
 finally:
+    s.close()
     del c
 
-    s.close()
 
