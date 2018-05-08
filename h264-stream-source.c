@@ -22,10 +22,12 @@ struct h264_stream_tex {
     uint32_t width;
     uint32_t height;
 
+    int sock;
     bool reconnect;
 
     int stream_pipe;
     int video_pipe;
+
 };
 
 static const char *h264_stream_getname(void *unused) {
@@ -84,8 +86,8 @@ static void *tcp_thread(void *data) {
         rt->reconnect = false;
 
         struct sockaddr_in serv_addr;
-        int sock = 0;
-        if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+        rt->sock = 0;
+        if ((rt->sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
             fprintf(stderr, "Socket creation error \n");
             break;
         }
@@ -93,20 +95,20 @@ static void *tcp_thread(void *data) {
         serv_addr.sin_family = AF_INET;
         serv_addr.sin_port = htons(50007);
         inet_pton(AF_INET, rt->ipaddr, &serv_addr.sin_addr);
-        if (connect(sock, (struct sockaddr *) &serv_addr, sizeof(serv_addr)) < 0) {
+        if (connect(rt->sock, (struct sockaddr *) &serv_addr, sizeof(serv_addr)) < 0) {
             fprintf(stderr, "Connection Failed \n");
             sleep(1);
             continue;
         }
 
-        while ((len = read(sock, buf, sizeof(buf))) > 0) {
+        while ((len = read(rt->sock, buf, sizeof(buf))) > 0) {
             write(rt->stream_pipe, buf, len);
             if (rt->reconnect || os_event_try(rt->stop_signal) != EAGAIN) {
                 break;
             }
         }
-        shutdown(sock, SHUT_WR);
-        close(sock);
+        shutdown(rt->sock, SHUT_WR);
+        close(rt->sock);
     }
     close(rt->stream_pipe);
     return NULL;
@@ -135,7 +137,7 @@ static void *video_thread(void *data) {
 
     int in_pipe[2];
     int out_pipe[2];
-    int pid1, pid2;
+    int pid;
 
     pipe(in_pipe); //create a pipe
     pipe(out_pipe); //create a pipe
@@ -143,10 +145,11 @@ static void *video_thread(void *data) {
     rt->video_pipe = out_pipe[0];
     rt->stream_pipe = in_pipe[1];
 
-    pid1 = fork(); //span a child process
-    if (pid1 == 0) {
+    pid = fork(); // Spawn a child process
+    if (pid == 0) {
+        // Child. Restore this processes sigint handler to default
         signal(SIGINT, SIG_DFL);
-        // Child. Let's redirect its standard in-/output to our pipe and replace process with ffmpeg
+        // Let's redirect its standard in-/output to our pipe and replace process with ffmpeg
         dup2(in_pipe[0], STDIN_FILENO);
         close(in_pipe[0]);
         close(in_pipe[1]);
@@ -160,6 +163,7 @@ static void *video_thread(void *data) {
                (char *) NULL);
         exit(0);
     }
+    // Only parent gets here.
 
     close(in_pipe[0]);
     close(out_pipe[1]);
@@ -168,49 +172,10 @@ static void *video_thread(void *data) {
     pthread_t tcp_thread_child;
 
     if (pthread_create(&tcp_thread_child, NULL, tcp_thread, rt) != 0) {
+        kill(pid, SIGINT);
         h264_stream_destroy(rt);
         return NULL;
     }
-    /*
-    pid2 = fork(); //span a child process
-    if (pid2 == 0) {
-        signal(SIGINT, SIG_DFL);
-        int len = 0;
-        uint8_t buf[1024];
-        close(out_pipe[0]);
-
-        while (1) {
-            if (rt->ipaddr == NULL) {
-                sleep(1);
-                continue;
-            }
-
-            struct sockaddr_in serv_addr;
-            int sock = 0;
-            if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
-                fprintf(stderr, "Socket creation error \n");
-                break;
-            }
-
-            serv_addr.sin_family = AF_INET;
-            serv_addr.sin_port = htons(50007);
-            inet_pton(AF_INET, rt->ipaddr, &serv_addr.sin_addr);
-            if (connect(sock, (struct sockaddr *) &serv_addr, sizeof(serv_addr)) < 0) {
-                fprintf(stderr, "Connection Failed \n");
-                sleep(1);
-                continue;
-            }
-
-            while ((len = read(sock, buf, sizeof(buf))) > 0) {
-                write(rt->stream_pipe, buf, len);
-            }
-            shutdown(sock, SHUT_WR);
-            close(sock);
-        }
-        close(in_pipe[1]);
-        exit(0);
-    }
-    */
 
     //Only parent gets here. Listen to what the tail says
     //close(pipefd[1]);
@@ -221,7 +186,7 @@ static void *video_thread(void *data) {
     // Process video frames
     while (os_event_try(rt->stop_signal) == EAGAIN) {
         // Read a frame from the input pipe into the buffer
-        int count = fread(pixels, 1, sizeof(pixels), pipein);
+        size_t count = fread(pixels, 1, sizeof(pixels), pipein);
         //int count = read(out_pipe[0], pixels, sizeof(pixels));
 
         //printf("Got frame of size %u!\n", count);
@@ -236,19 +201,13 @@ static void *video_thread(void *data) {
 
         //os_sleepto_ns(cur_time + 100000000);
     }
-    while (os_event_try(rt->stop_signal) == EAGAIN) {
-        fill_texture(pixels);
+    fclose(pipein);
+    close(rt->video_pipe);
 
-        cur_time = os_gettime_ns();
-        frame.timestamp = cur_time;
+    shutdown(rt->sock, SHUT_WR);
+    close(rt->sock);
 
-        obs_source_output_video(rt->source, &frame);
-
-        os_sleepto_ns(cur_time + 250000000);
-    }
-
-    int ret1 = kill(pid1, SIGINT);
-    int ret2 = kill(pid2, SIGINT);
+    kill(pid, SIGINT);
 
     return NULL;
 }
